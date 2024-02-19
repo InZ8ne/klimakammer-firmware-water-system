@@ -8,6 +8,8 @@ const char I2C_ADDR = 0x55; //Set to desired i2c-adress
 #define Sensor2 0x13
 #define Sensor3 0x14
 
+#define Test 0
+
 
 #define BUILTIN_LED 25 //GPIO of BUILTIN_LED for pico
 #ifdef esp32dev
