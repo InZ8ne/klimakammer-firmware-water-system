@@ -8,14 +8,16 @@ const char I2C_ADDR = 0x55; //Set to desired i2c-adress
 #define Stepper 0x13
 #define Sensor 0x14
 
-//Pins for Pump
+//Pump
 #define PWMPINForward 21
 #define PWMPINReverse 19
 #define nFaultPump 18
 #define IPropi 27
 
-//Pins for Pressure Sensing
+//Pressure Sensing
 #define ADCPinPressure 26
+#define MaxPressure 150
+#define LSBPressure MaxPressure/255
 
 //Stepper
 #define nFaultStepper 17 // use GPIO17 as nFault Pin for the Stepper
@@ -24,6 +26,12 @@ const char I2C_ADDR = 0x55; //Set to desired i2c-adress
 #define StepperControllerAddress 0x60 // Default 7bit i2c address of the DRV8847S
 #define IC1ControlRegister 0x01 // Address of the i2c IC1 Control Register of the DRV8847S
 #define Config4Bit 0x04 // Definition for 4Pin Interface Mode and using the i2c bits for steering
+#define Forward true
+#define Backward false
+#define MaxAngle 90
+#define HalfStep 0.9
+char currentPosition = 0;
+char currentAngle = 0;
 
 
 #ifndef esp32dev  
@@ -86,6 +94,57 @@ void blink(){
 }
 #endif
 
+char stepperNextState(char forward){
+  char nextState = 0;
+  char nextPosition = 0;
+  bool In4 = false;
+  bool In3 = false;
+  bool In2 = false;
+  bool In1 = false;
+  char statesIn4[8] = {1,1,0,0,0,0,0,1};
+  char statesIn3[8] = {0,0,0,1,1,1,0,0};
+  char statesIn2[8] = {0,0,0,0,0,1,1,1};
+  char statesIn1[8] = {0,1,1,1,0,0,0,0};
+
+  if(forward){
+    nextPosition = (currentPosition+1)%8;
+    In4 = statesIn4[nextPosition];
+    In3 = statesIn3[nextPosition];
+    In2 = statesIn2[nextPosition];
+    In1 = statesIn1[nextPosition];
+  }
+  else{
+    nextPosition = (currentPosition+7)%8;
+    In4 = statesIn4[nextPosition];
+    In3 = statesIn3[nextPosition];
+    In2 = statesIn2[nextPosition];
+    In1 = statesIn1[nextPosition];
+  }
+  currentPosition = nextPosition;
+  if (In4) {nextState |= (1<<3);}
+  if (In3) {nextState |= (1<<2);}
+  if (In2) {nextState |= (1<<1);}
+  if (In1) {nextState |= 1;}
+  return nextState;
+}
+
+void transmitToStepperController(float steps, char direction){
+  char slaveAddress = StepperControllerAddress << 1; //Shifting the 7bit Slave Address by 1 bit to signify a write
+  for (char i = 0; i<steps; i++){
+    Wire.beginTransmission(slaveAddress); // Starting the Transmission with the slave
+    Wire.write(IC1ControlRegister); //Transmit first 8 Bits for register-address
+    char config = (stepperNextState(direction)<<3) | Config4Bit; //Generates the 8 bit word to programm the register
+    Wire.write(config); //Writes the current configuration on the register
+    Wire.endTransmission(); //ends the transmission
+  }
+}
+
+int getWaterPressure(){
+  int adcPressure = analogRead(ADCPinPressure);
+  float actualPressure = adcPressure*LSBPressure;
+  return (int)actualPressure;
+}
+
 void onRequest(){ //Code to execute when master requests data from the slave
   #ifdef DEBUG
   Serial.println("OnRequest");
@@ -130,6 +189,10 @@ void onReceive(int len){
   //Code to execute when master sends data to the slave
   char module = Wire1.read();  //Read from which sensor/module the master wants to change
   char data = Wire1.read();  //Read the data the master wants to send
+  char direction;
+  char newAngle;
+  float steps;
+  int waterPressure;
   switch(module){
     case Pump:
       #ifdef DEBUG
@@ -143,12 +206,17 @@ void onReceive(int len){
         Serial.println("Stepper called");
       #endif
       //Code to execute when Stepper is being called
+      direction = data>>7;
+      newAngle = data & 0b01111111;
+      steps = (MaxAngle-newAngle)/HalfStep;
+      transmitToStepperController(steps, direction);
       break;
     case Sensor:
       #ifdef DEBUG
         Serial.println("Sensor called");
       #endif
       //Code to execute when Sensor is being called
+      waterPressure = getWaterPressure();
       break;
     default:
       //Code to execute when unkown module is being called
@@ -157,15 +225,6 @@ void onReceive(int len){
       #endif
       break;
   }
-}
-
-void transmitToStepperController(){
-  char slaveAddress = StepperControllerAddress << 1; //Shifting the 7bit Slave Address by 1 bit to signify a write
-  Wire.beginTransmission(slaveAddress); // Starting the Transmission with the slave
-  Wire.write(IC1ControlRegister); //Transmit first 8 Bits for register-address
-  /*TODO: zu fahrender Winkel nach vorne oder hinten berechnen und INx bits rotieren lassen.
-  Aktueller Winkel speichern.
-  Routinen für Vorwärts und Rückwärtsfahren.*/
 }
 
 void setupPump(){
