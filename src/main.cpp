@@ -1,7 +1,7 @@
 #include "Arduino.h"
 #include "Wire.h"
 
-const char I2C_ADDR = 0x55; //Set to desired i2c-adress
+const char I2C_ADDR = 0x71; //Set to desired i2c-adress
 #undef DEBUG    //Define for various debug outputs (#undef to disable) - !!!ENABLING SLOWS DOWN CODE SIGNIFICANTLY!!!
 
 #define Pump 0x12
@@ -32,11 +32,7 @@ const char I2C_ADDR = 0x55; //Set to desired i2c-adress
 #define HalfStep 0.9
 char currentPosition = 0;
 char currentAngle = 0;
-
-
-#ifndef esp32dev  
-  arduino::MbedI2C Wire1(WIRE1_SDA, WIRE1_SCL);
-#endif
+char module = 0;
 
 #define BUILTIN_LED 25 //GPIO of BUILTIN_LED for pico
 #ifdef esp32dev
@@ -44,6 +40,7 @@ char currentAngle = 0;
   #define BUILTIN_LED 2 //GPIO of BUILTIN_LED for esp32dev
 #endif
 
+char data = 0;
 
 void sendData(float data1, float data2);  //Function to send data back to the master
 void sendData(int data1, int data2);  //Overload to accept int as argument
@@ -128,7 +125,7 @@ char stepperNextState(char forward){
   return nextState;
 }
 
-void transmitToStepperController(float steps, char direction){
+void transmitToStepperController(int steps, char direction){
   char slaveAddress = StepperControllerAddress << 1; //Shifting the 7bit Slave Address by 1 bit to signify a write
   for (char i = 0; i<steps; i++){
     Wire.beginTransmission(slaveAddress); // Starting the Transmission with the slave
@@ -151,7 +148,6 @@ void onRequest(){ //Code to execute when master requests data from the slave
   Serial.println(Wire.peek());
   blink();
   #endif
-  char module = Wire.read();  //Read from which sensor/module the master wants data
   switch(module){
     case Pump:
       #ifdef DEBUG
@@ -187,8 +183,11 @@ void onReceive(int len){
   blink();
   #endif
   //Code to execute when master sends data to the slave
-  char module = Wire1.read();  //Read from which sensor/module the master wants to change
-  char data = Wire1.read();  //Read the data the master wants to send
+  module = Wire1.read();  //Read from which sensor/module the master wants to change
+  if(!Wire1.available()){
+    return;
+  }
+  data = Wire1.read();  //Read the data the master wants to send
   char direction;
   char newAngle;
   float steps;
@@ -206,17 +205,19 @@ void onReceive(int len){
         Serial.println("Stepper called");
       #endif
       //Code to execute when Stepper is being called
-      direction = data>>7;
-      newAngle = data & 0b01111111;
-      steps = (MaxAngle-newAngle)/HalfStep;
-      transmitToStepperController(steps, direction);
+      direction = data>>7; //The MSB signifies the direction
+      newAngle = data & 0b01111111; //The other 7 bit are the desired new angle
+      steps = (int)(currentAngle-newAngle)/HalfStep; //calculate how many steps are needed
+      currentAngle = newAngle; // Update the current Angle of the Stepper 
+      transmitToStepperController(steps, direction); //Move the stepper to the new Position
       break;
     case Sensor:
       #ifdef DEBUG
         Serial.println("Sensor called");
       #endif
       //Code to execute when Sensor is being called
-      waterPressure = getWaterPressure();
+      waterPressure = getWaterPressure(); //get the value of water pressure
+      // Code if pressure too high not defined yet
       break;
     default:
       //Code to execute when unkown module is being called
@@ -236,17 +237,22 @@ void setupPump(){
   analogWrite(PWMPINForward, 0); //Initializes PWM on the PWM Pins with duty cycle 0
   analogWrite(PWMPINReverse, 0);
 }
-
 void setupPressureSensor(){
   pinMode(ADCPinPressure, INPUT); // Sets the Pin to measure WaterPressure as an Input
 }
-
 void setupStepper(){
   pinMode(nFaultStepper, INPUT); //Sets the Fault-Sense Pin as an input
 }
+void setupWire1(){
+  Wire1.setSDA(WIRE1_SDA); 
+  Wire1.setSCL(WIRE1_SCL);
+  Wire1.onReceive(onReceive);  //Function to be called when a master sends data to the slave
+  Wire1.onRequest(onRequest);  //Function to be called when a master requests data from the slave
+  Wire1.begin((uint8_t)I2C_ADDR);  //Register this device as a slave on the i2c-bus (on bus 1)
+  Wire.begin(); //Set this device as a master on the i2c-bus (bus 0)
+}
 
 void setup() {
-  // put your setup code here, to run once:
   #ifdef DEBUG
   pinMode(BUILTIN_LED, OUTPUT);
   #endif
@@ -255,15 +261,13 @@ void setup() {
   setupPump(); //Setup Raspi Pins for the Pump
   setupPressureSensor(); //setup Raspi Pins for the pressure sensor
   setupStepper(); // setup Raspi pins for the StepperController
+  setupWire1(); //setup Raspi pins for the second I2C Interface
 
-  Wire1.onReceive(onReceive);  //Function to be called when a master sends data to the slave
-  Wire1.onRequest(onRequest);  //Function to be called when a master requests data from the slave
-  Wire1.begin((uint8_t)I2C_ADDR);  //Register this device as a slave on the i2c-bus (on bus 1)
-  Wire.begin(); //Set this device as a master on the i2c-bus (bus 0)
-
+  analogWriteFreq(1000);  // PWM Frequency 1kHz
+  analogWriteRange(255); //8bit PWM
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-
+  Serial.println((int)data);
+  delay(500);
 }
